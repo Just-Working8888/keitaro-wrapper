@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keitaro wrapper</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">Keitaro <span>wrapper</span></div>
+  <nav>
+    <button class="tab active" data-tab="create">Создать кампанию</button>
+    <button class="tab" data-tab="edit">Редактор офферов</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ============ CREATOR ============ -->
+  <section id="tab-create" class="panel">
+    <div class="grid2">
+      <form id="create-form" class="card">
+        <h2>Новая кампания</h2>
+        <label>Название кампании
+          <input name="name" required maxlength="255" placeholder="test_bekbolot_de">
+        </label>
+        <div class="row">
+          <label>Гео (ISO-код)
+            <input name="country" required maxlength="2" placeholder="DE" class="upper">
+          </label>
+          <label class="grow">Оффер
+            <select name="offer_id" required></select>
+          </label>
+        </div>
+        <label>Домен <select name="domain_id" required></select></label>
+        <label>Группа <select name="group_id" required></select></label>
+        <label>Источник <select name="traffic_source_id" required></select></label>
+
+        <div class="flow">
+          <div><b>Поток 1</b> страна = <code id="flow-geo">??</code> → <code id="flow-url"></code></div>
+          <div><b>Поток 2</b> все остальные → оффер <code id="flow-offer">—</code> (100%)</div>
+        </div>
+        <button type="submit" class="primary">Создать</button>
+        <div id="create-result"></div>
+      </form>
+
+      <div class="card">
+        <h2>Созданные здесь</h2>
+        <div id="created-list" class="muted">Загрузка…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ EDITOR ============ -->
+  <section id="tab-edit" class="panel hidden">
+    <div class="card">
+      <div class="toolbar">
+        <label class="grow">Кампания
+          <input id="camp-search" list="camp-list" placeholder="ID или название…" autocomplete="off">
+          <datalist id="camp-list"></datalist>
+        </label>
+        <label>Поток <select id="stream-select" disabled></select></label>
+        <label>Период <select id="interval-select"></select></label>
+        <button id="reload" class="ghost" title="Обновить">↻</button>
+      </div>
+    </div>
+
+    <div id="editor" class="card hidden">
+      <div class="camp-head">
+        <div>
+          <h2 id="ed-title"></h2>
+          <a id="ed-url" target="_blank" rel="noopener"></a>
+        </div>
+        <div id="share-badge" class="badge"></div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr>
+            <th>ID</th><th class="left">Оффер</th><th>Доля, %</th>
+            <th>Клики</th><th>Уник.</th><th>Конв.</th><th>CR</th>
+            <th>Доход</th><th>Расход</th><th>Прибыль</th><th>ROI</th><th>EPC</th><th></th>
+          </tr>
+          </thead>
+          <tbody id="offers-body"></tbody>
+          <tfoot id="offers-foot"></tfoot>
+        </table>
+      </div>
+
+      <div class="actions">
+        <div class="add-box">
+          <select id="add-select" multiple size="4"></select>
+          <button id="add-btn" class="primary">+ Добавить выбранные</button>
+          <small class="muted">При добавлении/удалении доли делятся поровну</small>
+        </div>
+        <div class="share-box">
+          <button id="even-btn" class="ghost">Поровну</button>
+          <button id="save-shares" class="primary" disabled>Сохранить доли</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="history-card" class="card hidden">
+      <h2>История изменений</h2>
+      <div id="history"></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
