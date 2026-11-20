@@ -55,54 +55,33 @@
   <section id="tab-edit" class="panel hidden">
     <div class="card">
       <div class="toolbar">
-        <label class="grow">Кампания
-          <input id="camp-search" list="camp-list" placeholder="ID или название…" autocomplete="off">
+        <label class="grow">Кампания (ID или название)
+          <input id="camp-search" list="camp-list" placeholder="#215477 или test_…" autocomplete="off">
           <datalist id="camp-list"></datalist>
         </label>
-        <label>Поток <select id="stream-select" disabled></select></label>
-        <label>Период <select id="interval-select"></select></label>
-        <button id="reload" class="ghost" title="Обновить">↻</button>
+        <button id="fetch-btn" class="primary">Fetch streams</button>
+        <label>Статистика за <select id="interval-select"></select></label>
       </div>
+      <div id="fetched" class="fetched"></div>
     </div>
 
-    <div id="editor" class="card hidden">
-      <div class="camp-head">
+    <div id="editor" class="hidden">
+      <div class="camp-head card">
         <div>
           <h2 id="ed-title"></h2>
           <a id="ed-url" target="_blank" rel="noopener"></a>
         </div>
-        <div id="share-badge" class="badge"></div>
+        <div class="muted small" id="ed-fetched"></div>
       </div>
-
-      <div class="table-wrap">
-        <table>
-          <thead>
-          <tr>
-            <th>ID</th><th class="left">Оффер</th><th>Доля, %</th>
-            <th>Клики</th><th>Уник.</th><th>Конв.</th><th>CR</th>
-            <th>Доход</th><th>Расход</th><th>Прибыль</th><th>ROI</th><th>EPC</th><th></th>
-          </tr>
-          </thead>
-          <tbody id="offers-body"></tbody>
-          <tfoot id="offers-foot"></tfoot>
-        </table>
-      </div>
-
-      <div class="actions">
-        <div class="add-box">
-          <select id="add-select" multiple size="4"></select>
-          <button id="add-btn" class="primary">+ Добавить выбранные</button>
-          <small class="muted">При добавлении/удалении доли делятся поровну</small>
-        </div>
-        <div class="share-box">
-          <button id="even-btn" class="ghost">Поровну</button>
-          <button id="save-shares" class="primary" disabled>Сохранить доли</button>
-        </div>
-      </div>
+      <div id="streams"></div>
+      <p class="muted small legend">
+        Жёлтый поток — есть неопубликованные изменения (в Keitaro их ещё нет). 📌 — закреплённая доля: при пересчёте
+        не меняется, остальные делят остаток поровну. Ввод доли вручную закрепляет её.
+      </p>
     </div>
 
     <div id="history-card" class="card hidden">
-      <h2>История изменений</h2>
+      <h2>История публикаций</h2>
       <div id="history"></div>
     </div>
   </section>

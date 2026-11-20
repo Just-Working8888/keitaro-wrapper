@@ -38,73 +38,155 @@ def test_create_rolls_back_on_stream_failure(client, fake):
     assert client.get("/api/campaigns/created").json() == []
 
 
-def _setup(client):
-    data = create(client).json()
-    return data["keitaro_id"], data["offer_stream_id"]
+def _setup(client, fake, offers=(1,)):
+    """Create a campaign through the creator, then put `offers` into its offer stream in Keitaro."""
+    data = create(client, offer_id=offers[0]).json()
+    cid, sid = data["keitaro_id"], data["offer_stream_id"]
+    shares = {1: [100], 2: [50, 50], 3: [34, 33, 33]}[len(offers)]
+    fake.streams[sid]["offers"] = [{"offer_id": o, "share": sh, "state": "active"} for o, sh in zip(offers, shares)]
+    state = client.post(f"/api/campaigns/{cid}/fetch").json()
+    return cid, sid, state
 
 
-def test_editor_add_and_remove_rebalance(client, fake):
-    cid, sid = _setup(client)
-    base = f"/api/campaigns/{cid}/streams/{sid}"
+def keitaro_shares(fake, sid):
+    return {o["offer_id"]: o["share"] for o in fake.streams[sid]["offers"]}
 
-    r = client.post(base + "/offers", json={"offer_ids": [2, 3]})
-    assert r.status_code == 200, r.text
-    assert r.json()["before"] == {"1": 100}
-    assert r.json()["after"] == {"1": 34, "2": 33, "3": 33}
-    assert {o["offer_id"]: o["share"] for o in fake.streams[sid]["offers"]} == {1: 34, 2: 33, 3: 33}
 
-    # duplicates are ignored, all-duplicates is an error
-    assert client.post(base + "/offers", json={"offer_ids": [2]}).status_code == 400
+def offers_of(stream):
+    return {o["offer_id"]: (o["state"], o["share"]) for o in stream["offers"]}
 
-    r = client.delete(base + "/offers/1")
-    assert r.status_code == 200
-    assert {o["offer_id"]: o["share"] for o in fake.streams[sid]["offers"]} == {2: 50, 3: 50}
 
-    client.delete(base + "/offers/2")
-    r = client.delete(base + "/offers/3")
-    assert r.status_code == 400  # last offer can't be removed
-    assert {o["offer_id"]: o["share"] for o in fake.streams[sid]["offers"]} == {3: 100}
+def test_fetch_lists_all_streams(client, fake):
+    cid, sid, state = _setup(client, fake, (1, 2, 3))
+    geo, offer = state["streams"]
+    # the stream without offers is listed but not parsed
+    assert geo["is_offer_stream"] is False and geo["offers"] == []
+    assert offer["id"] == sid and offer["dirty"] is False
+    assert offers_of(offer) == {1: ("active", 34), 2: ("active", 33), 3: ("active", 33)}
 
+
+def test_add_offer_is_a_draft_until_push(client, fake):
+    cid, sid, _ = _setup(client, fake, (1, 2, 3))
+    s = client.post(f"/api/streams/{sid}/offers", json={"offer_id": 4}).json()
+    assert s["dirty"] is True and s["share_total"] == 100
+    assert offers_of(s) == {1: ("active", 25), 2: ("active", 25), 3: ("active", 25), 4: ("active", 25)}
+    assert keitaro_shares(fake, sid) == {1: 34, 2: 33, 3: 33}  # Keitaro untouched
+
+    s = client.post(f"/api/streams/{sid}/push").json()
+    assert s["dirty"] is False
+    assert keitaro_shares(fake, sid) == {1: 25, 2: 25, 3: 25, 4: 25}
     hist = client.get(f"/api/campaigns/{cid}/history").json()
-    assert [h["action"] for h in hist] == ["remove", "remove", "add"]
+    assert hist[0]["before"] == {"1": 34, "2": 33, "3": 33} and hist[0]["offer_ids"] == [1, 2, 3, 4]
 
 
-def test_editor_set_shares(client, fake):
-    cid, sid = _setup(client)
-    base = f"/api/campaigns/{cid}/streams/{sid}"
-    client.post(base + "/offers", json={"offer_ids": [2]})
-
-    assert client.put(base + "/shares", json={"shares": {"1": 70, "2": 40}}).status_code == 400
-    assert client.put(base + "/shares", json={"shares": {"1": 100}}).status_code == 409
-    r = client.put(base + "/shares", json={"shares": {"1": 70, "2": 30}})
-    assert r.status_code == 200
-    assert {o["offer_id"]: o["share"] for o in fake.streams[sid]["offers"]} == {1: 70, 2: 30}
+def test_cancel_drops_unpublished_changes(client, fake):
+    cid, sid, _ = _setup(client, fake, (1, 2, 3))
+    client.post(f"/api/streams/{sid}/offers", json={"offer_id": 4})
+    client.delete(f"/api/streams/{sid}/offers/1")
+    s = client.post(f"/api/streams/{sid}/cancel").json()
+    assert s["dirty"] is False
+    assert offers_of(s) == {1: ("active", 34), 2: ("active", 33), 3: ("active", 33)}
 
 
-def test_editor_rejects_unknown_offer_and_foreign_stream(client, fake):
-    cid, sid = _setup(client)
-    assert client.post(f"/api/campaigns/{cid}/streams/{sid}/offers", json={"offer_ids": [777]}).status_code == 404
-    other_cid, other_sid = _setup(client)
-    assert client.post(f"/api/campaigns/{cid}/streams/{other_sid}/offers", json={"offer_ids": [2]}).status_code == 404
+def test_remove_archives_offer_and_bring_back(client, fake):
+    cid, sid, _ = _setup(client, fake, (1, 2, 3))
+    s = client.delete(f"/api/streams/{sid}/offers/3").json()
+    assert s["dirty"] is True
+    assert offers_of(s) == {1: ("active", 50), 2: ("active", 50), 3: ("removed", 0)}
+
+    client.post(f"/api/streams/{sid}/push")
+    assert keitaro_shares(fake, sid) == {1: 50, 2: 50}  # gone from Keitaro...
+    s = client.get(f"/api/campaigns/{cid}/streams").json()["streams"][1]
+    assert offers_of(s)[3] == ("removed", 0) and s["dirty"] is False  # ...but kept in our archive
+
+    s = client.post(f"/api/streams/{sid}/offers/3/restore").json()
+    assert s["dirty"] is True and offers_of(s)[3] == ("active", 33)
+    client.post(f"/api/streams/{sid}/push")
+    assert keitaro_shares(fake, sid) == {1: 34, 2: 33, 3: 33}
 
 
-def test_editor_state_stats_and_totals(client, fake):
-    cid, sid = _setup(client)
-    client.post(f"/api/campaigns/{cid}/streams/{sid}/offers", json={"offer_ids": [2]})
+def test_removing_unpublished_offer_deletes_it(client, fake):
+    cid, sid, _ = _setup(client, fake, (1,))
+    client.post(f"/api/streams/{sid}/offers", json={"offer_id": 2})
+    s = client.delete(f"/api/streams/{sid}/offers/2").json()
+    assert offers_of(s) == {1: ("active", 100)} and s["dirty"] is False
+
+
+def test_refetch_marks_offers_deleted_in_keitaro_as_removed(client, fake):
+    cid, sid, _ = _setup(client, fake, (1, 2, 3))
+    fake.streams[sid]["offers"] = [{"offer_id": 1, "share": 100, "state": "active"}]  # edited in Keitaro
+    s = client.post(f"/api/campaigns/{cid}/fetch").json()["streams"][1]
+    assert offers_of(s) == {1: ("active", 100), 2: ("removed", 0), 3: ("removed", 0)}
+    assert s["dirty"] is False
+
+    s = client.post(f"/api/streams/{sid}/offers/2/restore").json()
+    assert offers_of(s)[1] == ("active", 50) and offers_of(s)[2] == ("active", 50)
+
+
+def test_pinned_share_survives_rebalance(client, fake):
+    cid, sid, _ = _setup(client, fake, (1, 2, 3))
+    client.post(f"/api/streams/{sid}/offers", json={"offer_id": 4})  # 25 x4
+    client.post(f"/api/streams/{sid}/push")
+    s = client.patch(f"/api/streams/{sid}/offers/1", json={"pinned": True}).json()
+    assert offers_of(s)[1] == ("active", 25)
+
+    s = client.delete(f"/api/streams/{sid}/offers/4").json()
+    assert offers_of(s) == {1: ("active", 25), 2: ("active", 38), 3: ("active", 37), 4: ("removed", 0)}
+    s = client.post(f"/api/streams/{sid}/offers/4/restore").json()
+    assert offers_of(s) == {1: ("active", 25), 2: ("active", 25), 3: ("active", 25), 4: ("active", 25)}
+
+    # typing a share pins it
+    s = client.patch(f"/api/streams/{sid}/offers/2", json={"share": 45}).json()
+    assert offers_of(s) == {1: ("active", 25), 2: ("active", 45), 3: ("active", 15), 4: ("active", 15)}
+    assert {o["offer_id"] for o in s["offers"] if o["pinned"]} == {1, 2}
+
+    # pins can't exceed 100%
+    assert client.patch(f"/api/streams/{sid}/offers/3", json={"share": 40}).status_code == 400
+    client.post(f"/api/streams/{sid}/push")
+    assert keitaro_shares(fake, sid) == {1: 25, 2: 45, 3: 15, 4: 15}
+
+
+def test_push_validation_and_conflict(client, fake):
+    cid, sid, _ = _setup(client, fake, (1, 2))
+    client.delete(f"/api/streams/{sid}/offers/1")
+    client.delete(f"/api/streams/{sid}/offers/2")
+    r = client.post(f"/api/streams/{sid}/push")
+    assert r.status_code == 400 and "хотя бы один" in r.json()["detail"]
+    client.post(f"/api/streams/{sid}/cancel")
+
+    client.patch(f"/api/streams/{sid}/offers/1", json={"share": 60})
+    client.patch(f"/api/streams/{sid}/offers/2", json={"share": 30})  # all pinned, sum 90
+    assert client.post(f"/api/streams/{sid}/push").status_code == 400
+
+    client.patch(f"/api/streams/{sid}/offers/2", json={"pinned": False})  # -> 60/40
+    fake.streams[sid]["offers"][0]["share"] = 10  # someone changed Keitaro meanwhile
+    assert client.post(f"/api/streams/{sid}/push").status_code == 409
+
+
+def test_editor_errors(client, fake):
+    cid, sid, state = _setup(client, fake, (1,))
+    geo_id = state["streams"][0]["id"]
+    assert client.post(f"/api/streams/{sid}/offers", json={"offer_id": 777}).status_code == 404
+    assert client.post(f"/api/streams/{sid}/offers", json={"offer_id": 1}).status_code == 400
+    assert client.post(f"/api/streams/{geo_id}/offers", json={"offer_id": 2}).status_code == 400
+    assert client.post("/api/streams/999999/offers", json={"offer_id": 2}).status_code == 404
+    assert client.get("/api/campaigns/424242/streams").status_code == 404
+
+
+def test_offer_search(client, fake):
+    assert [o["id"] for o in client.get("/api/offers/search?q=offer b").json()] == [2]
+    assert [o["id"] for o in client.get("/api/offers/search?q=3").json()] == [3]
+
+
+def test_stats_and_totals(client, fake):
+    cid, sid, _ = _setup(client, fake, (1, 2))
     fake.report_rows = [
-        {"offer_id": 1, "clicks": 100, "campaign_unique_clicks": 90, "conversions": 5, "leads": 5, "sales": 0,
-         "rejected": 0, "revenue": 50, "cost": 20, "profit": 30},
-        {"offer_id": 2, "clicks": "300", "campaign_unique_clicks": 250, "conversions": 3, "leads": 3, "sales": 0,
-         "rejected": 0, "revenue": "10", "cost": 40, "profit": -30},
+        {"stream_id": sid, "offer_id": 1, "clicks": 100, "conversions": 5, "revenue": 50, "cost": 20, "profit": 30},
+        {"stream_id": sid, "offer_id": 2, "clicks": "300", "conversions": 3, "revenue": "10", "cost": 40, "profit": -30},
     ]
-    s = client.get(f"/api/campaigns/{cid}/editor?interval=all_time").json()
-    assert s["stream_id"] == sid and s["share_total"] == 100
-    by_id = {o["offer_id"]: o for o in s["offers"]}
-    assert by_id[1]["share"] == 50 and by_id[1]["stats"]["cr"] == 5.0 and by_id[1]["stats"]["roi"] == 150.0
-    assert by_id[2]["stats"]["clicks"] == 300 and by_id[2]["stats"]["epc"] == round(10 / 300, 4)
-    t = s["totals"]
-    assert t["clicks"] == 400 and t["conversions"] == 8 and t["profit"] == 0
-    assert t["cr"] == 2.0 and t["epc"] == 0.15 and t["roi"] == 0.0
-    assert [o["id"] for o in s["available_offers"]] == [3, 4]
-
-    assert client.get(f"/api/campaigns/{cid}/editor?interval=forever").status_code == 400
+    st = client.get(f"/api/campaigns/{cid}/stats?interval=all_time").json()
+    o1 = st["streams"][str(sid)]["1"]
+    assert o1["cr"] == 5.0 and o1["roi"] == 150.0
+    t = st["totals"][str(sid)]
+    assert t["clicks"] == 400 and t["conversions"] == 8 and t["profit"] == 0 and t["cr"] == 2.0 and t["roi"] == 0.0
+    assert client.get(f"/api/campaigns/{cid}/stats?interval=forever").status_code == 400

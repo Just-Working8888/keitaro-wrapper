@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -47,12 +47,13 @@ class CreatedCampaignOut(BaseModel):
     created_at: datetime
 
 
-class AddOffers(BaseModel):
-    offer_ids: List[int] = Field(min_length=1)
+class AddOffer(BaseModel):
+    offer_id: int = Field(gt=0)
 
 
-class SetShares(BaseModel):
-    shares: Dict[int, int]
+class UpdateOffer(BaseModel):
+    share: Optional[int] = Field(default=None, ge=0, le=100)
+    pinned: Optional[bool] = None
 
 
 class OfferChangeOut(BaseModel):

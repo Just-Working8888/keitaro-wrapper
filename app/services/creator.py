@@ -101,4 +101,12 @@ def create_campaign(client: KeitaroClient, db: Session, settings: Settings,
     db.add(record)
     db.commit()
     db.refresh(record)
+
+    # load the new campaign into the editor right away (not fatal if it fails)
+    from app.services.editor import fetch_streams
+    try:
+        fetch_streams(client, db, cid)
+    except KeitaroError:
+        log.exception("Created campaign %s, but could not fetch its streams", cid)
+        db.rollback()
     return record

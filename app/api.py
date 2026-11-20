@@ -8,7 +8,7 @@ from app.config import Settings, get_settings
 from app.db import get_db
 from app.keitaro import KeitaroClient
 from app.models import CreatedCampaign, OfferChange
-from app.schemas import AddOffers, CampaignCreate, CreatedCampaignOut, OfferChangeOut, SetShares
+from app.schemas import AddOffer, CampaignCreate, CreatedCampaignOut, OfferChangeOut, UpdateOffer
 from app.services import creator, editor
 
 router = APIRouter(prefix="/api")
@@ -64,6 +64,7 @@ def created_campaigns(db: Session = Depends(get_db)):
 # --- editor ------------------------------------------------------------------
 @router.get("/campaigns")
 def list_campaigns(client: KeitaroClient = Depends(get_client)):
+    """All campaigns visible in Keitaro (for the picker)."""
     campaigns = client.list_campaigns()
     return sorted(
         [{"id": c["id"], "name": c["name"], "group": c.get("group"), "state": c.get("state")} for c in campaigns],
@@ -71,28 +72,30 @@ def list_campaigns(client: KeitaroClient = Depends(get_client)):
     )
 
 
-@router.get("/campaigns/{campaign_id}/editor")
-def editor_state(campaign_id: int, stream_id: Optional[int] = None, interval: str = "7_days_ago",
-                 client: KeitaroClient = Depends(get_client)):
-    return editor.editor_state(client, campaign_id, stream_id, interval)
+@router.get("/campaigns/fetched")
+def fetched_campaigns(db: Session = Depends(get_db)):
+    """Campaigns already loaded into the editor."""
+    return editor.fetched_campaigns(db)
 
 
-@router.post("/campaigns/{campaign_id}/streams/{stream_id}/offers", response_model=OfferChangeOut)
-def add_offers(campaign_id: int, stream_id: int, data: AddOffers,
-               client: KeitaroClient = Depends(get_client), db: Session = Depends(get_db)):
-    return editor.add_offers(client, db, campaign_id, stream_id, data.offer_ids)
+@router.post("/campaigns/{campaign_id}/fetch")
+def fetch_streams(campaign_id: int, client: KeitaroClient = Depends(get_client), db: Session = Depends(get_db)):
+    """"Fetch streams": pull streams from Keitaro into the local DB (drops unpublished drafts)."""
+    camp = editor.fetch_streams(client, db, campaign_id)
+    return editor.campaign_state(db, camp)
 
 
-@router.delete("/campaigns/{campaign_id}/streams/{stream_id}/offers/{offer_id}", response_model=OfferChangeOut)
-def remove_offer(campaign_id: int, stream_id: int, offer_id: int,
-                 client: KeitaroClient = Depends(get_client), db: Session = Depends(get_db)):
-    return editor.remove_offer(client, db, campaign_id, stream_id, offer_id)
+@router.get("/campaigns/{campaign_id}/streams")
+def campaign_streams(campaign_id: int, db: Session = Depends(get_db)):
+    camp = editor.get_campaign(db, campaign_id)
+    if camp is None:
+        raise HTTPException(404, "Кампания ещё не загружена — нажмите Fetch streams")
+    return editor.campaign_state(db, camp)
 
 
-@router.put("/campaigns/{campaign_id}/streams/{stream_id}/shares", response_model=OfferChangeOut)
-def set_shares(campaign_id: int, stream_id: int, data: SetShares,
-               client: KeitaroClient = Depends(get_client), db: Session = Depends(get_db)):
-    return editor.set_shares(client, db, campaign_id, stream_id, data.shares)
+@router.get("/campaigns/{campaign_id}/stats")
+def campaign_stats(campaign_id: int, interval: str = "7_days_ago", client: KeitaroClient = Depends(get_client)):
+    return editor.campaign_stats(client, campaign_id, interval)
 
 
 @router.get("/campaigns/{campaign_id}/history", response_model=List[OfferChangeOut])
@@ -100,3 +103,41 @@ def history(campaign_id: int, db: Session = Depends(get_db)):
     return db.scalars(
         select(OfferChange).where(OfferChange.campaign_id == campaign_id).order_by(OfferChange.id.desc()).limit(50)
     ).all()
+
+
+@router.get("/offers/search")
+def search_offers(q: str = "", client: KeitaroClient = Depends(get_client)):
+    return editor.search_offers(client, q)
+
+
+@router.post("/streams/{stream_id}/offers")
+def add_offer(stream_id: int, data: AddOffer, client: KeitaroClient = Depends(get_client),
+              db: Session = Depends(get_db)):
+    return editor.stream_out(editor.add_offer(client, db, stream_id, data.offer_id))
+
+
+@router.delete("/streams/{stream_id}/offers/{offer_id}")
+def remove_offer(stream_id: int, offer_id: int, db: Session = Depends(get_db)):
+    return editor.stream_out(editor.remove_offer(db, stream_id, offer_id))
+
+
+@router.post("/streams/{stream_id}/offers/{offer_id}/restore")
+def restore_offer(stream_id: int, offer_id: int, db: Session = Depends(get_db)):
+    """"Bring back" a removed offer."""
+    return editor.stream_out(editor.restore_offer(db, stream_id, offer_id))
+
+
+@router.patch("/streams/{stream_id}/offers/{offer_id}")
+def update_offer(stream_id: int, offer_id: int, data: UpdateOffer, db: Session = Depends(get_db)):
+    """Set a share (pins it) or toggle the pin."""
+    return editor.stream_out(editor.update_offer(db, stream_id, offer_id, data.share, data.pinned))
+
+
+@router.post("/streams/{stream_id}/cancel")
+def cancel(stream_id: int, db: Session = Depends(get_db)):
+    return editor.stream_out(editor.cancel(db, stream_id))
+
+
+@router.post("/streams/{stream_id}/push")
+def push(stream_id: int, client: KeitaroClient = Depends(get_client), db: Session = Depends(get_db)):
+    return editor.stream_out(editor.push(client, db, stream_id))

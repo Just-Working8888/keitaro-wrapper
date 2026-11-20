@@ -99,11 +99,6 @@ $("#create-form").addEventListener("submit", async (e) => {
     f.name.value = "";
     campaignsLoaded = false;
     loadCreated();
-const deepLink = location.hash.match(/^#edit\/(\d+)/);
-if (deepLink) {
-  $('.tab[data-tab="edit"]').click();
-  openCampaign(+deepLink[1]);
-}
   } catch (err) {
     out.innerHTML = `<div class="result err">${esc(err.message)}</div>`;
   } finally {
@@ -139,161 +134,239 @@ document.addEventListener("click", (e) => {
 
 /* ---------------- editor ---------------- */
 let campaignsLoaded = false;
-let CAMPAIGNS = [];
-let STATE = null; // last editor state from the server
+let STATE = null; // {campaign, streams}
+let STATS = {}; // {streams: {sid: {oid: m}}, totals: {sid: m}}
 
 async function loadCampaigns() {
   try {
-    CAMPAIGNS = await api("GET", "/api/campaigns");
+    const list = await api("GET", "/api/campaigns");
     campaignsLoaded = true;
-    $("#camp-list").innerHTML = CAMPAIGNS.map((c) => `<option value="#${c.id} ${esc(c.name)}">`).join("");
+    $("#camp-list").innerHTML = list.map((c) => `<option value="#${c.id} ${esc(c.name)}">`).join("");
   } catch (err) {
     toast(err.message, true);
   }
+  loadFetched();
+}
+
+async function loadFetched() {
+  const list = await api("GET", "/api/campaigns/fetched").catch(() => []);
+  $("#fetched").innerHTML = list.length
+    ? "Загружены: " + list.map((c) => `<a href="#" data-load="${c.id}" class="${c.dirty ? "dirty-link" : ""}">#${c.id} ${esc(c.name)}</a>`).join(" · ")
+    : "";
 }
 
 function campaignFromInput() {
-  const v = $("#camp-search").value.trim();
-  const m = v.match(/^#?(\d+)/);
+  const m = $("#camp-search").value.trim().match(/^#?(\d+)/);
   return m ? +m[1] : null;
 }
 
-$("#camp-search").addEventListener("change", () => {
+$("#fetch-btn").addEventListener("click", () => {
   const id = campaignFromInput();
-  if (id) openCampaign(id);
+  if (!id) return toast("Укажите ID кампании", true);
+  fetchStreams(id);
 });
-$("#stream-select").addEventListener("change", () => STATE && openCampaign(STATE.campaign.id, +$("#stream-select").value));
-$("#interval-select").addEventListener("change", () => STATE && openCampaign(STATE.campaign.id, STATE.stream_id));
-$("#reload").addEventListener("click", () => {
-  const id = (STATE && STATE.campaign.id) || campaignFromInput();
-  if (id) openCampaign(id, STATE && STATE.stream_id);
+$("#camp-search").addEventListener("keydown", (e) => e.key === "Enter" && $("#fetch-btn").click());
+$("#fetched").addEventListener("click", (e) => {
+  const a = e.target.closest("[data-load]");
+  if (!a) return;
+  e.preventDefault();
+  openCampaign(+a.dataset.load);
 });
+$("#interval-select").addEventListener("change", () => STATE && loadStats());
 
-async function openCampaign(id, streamId) {
-  const q = new URLSearchParams({ interval: $("#interval-select").value || "7_days_ago" });
-  if (streamId) q.set("stream_id", streamId);
+async function fetchStreams(id) {
+  const dirty = STATE && STATE.campaign.id === id && STATE.streams.some((s) => s.dirty);
+  if (dirty && !confirm("Fetch загрузит состояние из Keitaro, неопубликованные изменения пропадут. Продолжить?")) return;
+  const btn = $("#fetch-btn");
+  btn.disabled = true;
   try {
-    STATE = await api("GET", `/api/campaigns/${id}/editor?${q}`);
-    const c = STATE.campaign;
-    $("#camp-search").value = `#${c.id} ${c.name}`;
-    history.replaceState(null, "", `#edit/${c.id}`);
-    renderEditor();
-    loadHistory();
+    STATE = await api("POST", `/api/campaigns/${id}/fetch`);
+    toast("Потоки загружены из Keitaro");
+    showCampaign();
   } catch (err) {
     toast(err.message, true);
+  } finally {
+    btn.disabled = false;
   }
 }
 
-function renderEditor() {
-  const s = STATE;
+// open from the local DB; fetch from Keitaro only if the campaign was never loaded
+async function openCampaign(id) {
+  try {
+    STATE = await api("GET", `/api/campaigns/${id}/streams`);
+    showCampaign();
+  } catch (err) {
+    fetchStreams(id);
+  }
+}
+
+function showCampaign() {
+  const c = STATE.campaign;
+  $("#camp-search").value = `#${c.id} ${c.name}`;
+  history.replaceState(null, "", `#edit/${c.id}`);
   $("#editor").classList.remove("hidden");
-  $("#ed-title").textContent = `#${s.campaign.id} ${s.campaign.name}`;
-  $("#ed-url").textContent = s.campaign.url;
-  $("#ed-url").href = s.campaign.url;
-
-  const ss = $("#stream-select");
-  ss.innerHTML = s.streams.map((x) => `<option value="${x.id}" ${x.id === s.stream_id ? "selected" : ""}>#${x.id} ${esc(x.name)} (${x.offers_count})</option>`).join("");
-  ss.disabled = s.streams.length < 2;
-
-  const row = (o) => {
-    const m = o.stats;
-    return `<tr data-offer="${o.offer_id}">
-      <td>${o.offer_id}</td>
-      <td class="name">${esc(o.name)}${o.state !== "active" ? ` <span class="muted">(${esc(o.state)})</span>` : ""}</td>
-      <td><input class="share-input" type="number" min="0" max="100" step="1" value="${o.share}" data-orig="${o.share}"></td>
-      <td>${fmt.int(m.clicks)}</td><td>${fmt.int(m.campaign_unique_clicks)}</td><td>${fmt.int(m.conversions)}</td>
-      <td>${fmt.pct(m.cr)}</td><td>${fmt.money(m.revenue)}</td><td>${fmt.money(m.cost)}</td>
-      <td class="${signCls(m.profit)}">${fmt.money(m.profit)}</td><td class="${signCls(m.roi)}">${fmt.pct(m.roi)}</td><td>${fmt.epc(m.epc)}</td>
-      <td><button class="danger" data-remove="${o.offer_id}" title="Удалить оффер">✕</button></td>
-    </tr>`;
-  };
-  $("#offers-body").innerHTML = s.offers.length ? s.offers.map(row).join("")
-    : `<tr><td colspan="13" class="left muted">В потоке нет офферов</td></tr>`;
-
-  const t = s.totals;
-  $("#offers-foot").innerHTML = `<tr>
-    <td></td><td class="left">Итого: ${s.offers.length} офф.</td><td id="share-sum"></td>
-    <td>${fmt.int(t.clicks)}</td><td>${fmt.int(t.campaign_unique_clicks)}</td><td>${fmt.int(t.conversions)}</td>
-    <td>${fmt.pct(t.cr)}</td><td>${fmt.money(t.revenue)}</td><td>${fmt.money(t.cost)}</td>
-    <td class="${signCls(t.profit)}">${fmt.money(t.profit)}</td><td class="${signCls(t.roi)}">${fmt.pct(t.roi)}</td><td>${fmt.epc(t.epc)}</td><td></td></tr>`;
-
-  $("#add-select").innerHTML = s.available_offers.length
-    ? s.available_offers.map((o) => `<option value="${o.id}">#${o.id} ${esc(o.name)}</option>`).join("")
-    : `<option disabled>Все доступные офферы уже в потоке</option>`;
-  $("#add-btn").disabled = !s.available_offers.length;
-  refreshShares();
+  $("#ed-title").textContent = `#${c.id} ${c.name}`;
+  $("#ed-url").textContent = c.url;
+  $("#ed-url").href = c.url;
+  $("#ed-fetched").textContent = "Fetch: " + new Date(c.fetched_at + "Z").toLocaleString("ru-RU");
+  renderStreams();
+  loadStats();
+  loadHistory();
+  loadFetched();
 }
 
-function currentShares() {
-  const out = {};
-  $$("#offers-body tr[data-offer]").forEach((tr) => {
-    out[tr.dataset.offer] = parseInt($(".share-input", tr).value, 10) || 0;
-  });
-  return out;
-}
-
-function refreshShares() {
-  const inputs = $$(".share-input");
-  const sum = inputs.reduce((a, i) => a + (parseInt(i.value, 10) || 0), 0);
-  const changed = inputs.some((i) => i.value !== i.dataset.orig);
-  inputs.forEach((i) => i.classList.toggle("changed", i.value !== i.dataset.orig));
-  const ok = sum === 100;
-  const cell = $("#share-sum");
-  if (cell) cell.innerHTML = `<span class="${ok ? "pos" : "neg"}">${sum}%</span>`;
-  const badge = $("#share-badge");
-  badge.className = "badge " + (ok ? "ok" : "bad");
-  badge.textContent = ok ? (changed ? "Сумма 100% · не сохранено" : "Сумма долей 100%") : `Сумма долей ${sum}% (нужно 100)`;
-  $("#save-shares").disabled = !(changed && ok);
-}
-
-$("#offers-body").addEventListener("input", (e) => e.target.classList.contains("share-input") && refreshShares());
-
-$("#even-btn").addEventListener("click", () => {
-  const inputs = $$(".share-input");
-  const n = inputs.length;
-  if (!n) return;
-  const base = Math.floor(100 / n), rest = 100 % n; // same rule as the backend: 34/33/33
-  inputs.forEach((i, idx) => (i.value = base + (idx < rest ? 1 : 0)));
-  refreshShares();
-});
-
-async function mutate(promise, okMsg) {
+async function loadStats() {
   try {
-    await promise;
-    toast(okMsg);
-    await openCampaign(STATE.campaign.id, STATE.stream_id);
+    STATS = await api("GET", `/api/campaigns/${STATE.campaign.id}/stats?interval=${$("#interval-select").value}`);
+  } catch (err) {
+    STATS = {};
+  }
+  renderStreams();
+}
+
+const ZERO = { clicks: 0, conversions: 0, cr: 0, revenue: 0, profit: 0, roi: 0 };
+const statCells = (m) => `<td>${fmt.int(m.clicks)}</td><td>${fmt.int(m.conversions)}</td><td>${fmt.pct(m.cr)}</td>
+  <td>${fmt.money(m.revenue)}</td><td class="${signCls(m.profit)}">${fmt.money(m.profit)}</td><td class="${signCls(m.roi)}">${fmt.pct(m.roi)}</td>`;
+
+function renderStreams() {
+  $("#streams").innerHTML = STATE.streams.map(renderStream).join("") || `<div class="card muted">В кампании нет потоков</div>`;
+}
+
+function renderStream(s) {
+  if (!s.is_offer_stream) {
+    return `<div class="stream plain"><span class="pos-n">${s.position}</span> <b>${esc(s.name)}</b>
+      <span class="muted">#${s.id} · поток без офферов</span></div>`;
+  }
+  const st = (STATS.streams && STATS.streams[s.id]) || {};
+  const rows = s.offers.map((o) => {
+    const removed = o.state === "removed";
+    const m = st[o.offer_id] || ZERO;
+    const was = o.dirty && !o.is_new && o.published_share !== null && o.published_share !== o.share
+      ? `<span class="was">было ${o.published_share}%</span>` : "";
+    return `<tr class="${removed ? "removed" : ""} ${o.dirty ? "row-dirty" : ""}" data-offer="${o.offer_id}">
+      <td>${o.offer_id}</td>
+      <td class="name">${esc(o.name)} ${o.is_new ? '<span class="chip new">новый</span>' : ""}${removed ? '<span class="chip">removed</span>' : ""}</td>
+      <td class="share-cell">
+        ${removed ? "0%" : `<input class="share-input" type="number" min="0" max="100" value="${o.share}" data-orig="${o.share}">`}
+        ${was}
+      </td>
+      <td>${removed ? "" : `<button class="pin ${o.pinned ? "on" : ""}" data-pin="${o.pinned ? 0 : 1}" title="${o.pinned ? "Открепить" : "Закрепить долю"}">📌</button>`}</td>
+      ${statCells(m)}
+      <td>${removed ? `<button class="ghost sm" data-restore>Bring back</button>` : `<button class="danger sm" data-remove>Remove</button>`}</td>
+    </tr>`;
+  }).join("");
+  const ok = s.share_total === 100;
+  const t = (STATS.totals && STATS.totals[s.id]) || ZERO;
+  return `<div class="card stream ${s.dirty ? "dirty" : ""}" data-stream="${s.id}">
+    <div class="stream-head">
+      <div><span class="pos-n">${s.position}</span> <b>${esc(s.name)}</b> <span class="muted">#${s.id}</span>
+        ${s.dirty ? '<span class="chip warn">не опубликовано</span>' : ""}</div>
+      <div class="stream-actions">
+        <button class="ghost" data-cancel ${s.dirty ? "" : "disabled"}>Cancel</button>
+        <button class="primary" data-push ${s.dirty && ok ? "" : "disabled"}>Push stream</button>
+      </div>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>ID</th><th class="left">Оффер</th><th>Доля</th><th></th>
+        <th>Клики</th><th>Конв.</th><th>CR</th><th>Доход</th><th>Прибыль</th><th>ROI</th><th></th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="11" class="left muted">Офферов нет</td></tr>`}</tbody>
+      <tfoot><tr><td></td><td class="left">Активных: ${s.active_count}</td>
+        <td><span class="${ok ? "pos" : "neg"}">${s.share_total}%</span></td><td></td>${statCells(t)}<td></td></tr></tfoot>
+    </table></div>
+    <div class="add-offer">
+      <input class="offer-search" placeholder="Добавить оффер: ID или название…" autocomplete="off">
+      <div class="suggest hidden"></div>
+    </div>
+  </div>`;
+}
+
+async function streamAction(sid, method, url, body, okMsg) {
+  try {
+    const updated = await api(method, url, body);
+    STATE.streams = STATE.streams.map((s) => (s.id === sid ? updated : s));
+    renderStreams();
+    if (okMsg) toast(okMsg);
+    return updated;
   } catch (err) {
     toast(err.message, true);
+    renderStreams(); // drop invalid inputs
   }
 }
 
-$("#save-shares").addEventListener("click", () =>
-  mutate(api("PUT", `/api/campaigns/${STATE.campaign.id}/streams/${STATE.stream_id}/shares`, { shares: currentShares() }), "Доли сохранены"));
+$("#streams").addEventListener("click", async (e) => {
+  const card = e.target.closest("[data-stream]");
+  if (!card) return;
+  const sid = +card.dataset.stream;
+  const tr = e.target.closest("[data-offer]");
+  const oid = tr && +tr.dataset.offer;
+  const base = `/api/streams/${sid}`;
 
-$("#add-btn").addEventListener("click", () => {
-  const ids = $$("#add-select option:checked").map((o) => +o.value).filter(Boolean);
-  if (!ids.length) return toast("Выберите офферы в списке (Cmd/Ctrl — несколько)", true);
-  mutate(api("POST", `/api/campaigns/${STATE.campaign.id}/streams/${STATE.stream_id}/offers`, { offer_ids: ids }),
-    `Добавлено офферов: ${ids.length}`);
+  if (e.target.closest("[data-remove]")) streamAction(sid, "DELETE", `${base}/offers/${oid}`);
+  else if (e.target.closest("[data-restore]")) streamAction(sid, "POST", `${base}/offers/${oid}/restore`);
+  else if (e.target.closest("[data-pin]")) streamAction(sid, "PATCH", `${base}/offers/${oid}`, { pinned: e.target.closest("[data-pin]").dataset.pin === "1" });
+  else if (e.target.closest("[data-cancel]")) streamAction(sid, "POST", `${base}/cancel`, null, "Изменения отменены");
+  else if (e.target.closest("[data-push]")) {
+    if (await streamAction(sid, "POST", `${base}/push`, null, "Опубликовано в Keitaro")) {
+      loadHistory();
+      loadFetched();
+    }
+  } else if (e.target.closest("[data-add]")) {
+    const id = +e.target.closest("[data-add]").dataset.add;
+    $(".offer-search", card).value = "";
+    streamAction(sid, "POST", `${base}/offers`, { offer_id: id }, `Оффер #${id} добавлен (не опубликован)`);
+  }
 });
 
-$("#offers-body").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-remove]");
-  if (!b) return;
-  const id = b.dataset.remove;
-  if (!confirm(`Удалить оффер #${id} из потока? Доли оставшихся будут поделены поровну.`)) return;
-  mutate(api("DELETE", `/api/campaigns/${STATE.campaign.id}/streams/${STATE.stream_id}/offers/${id}`), `Оффер #${id} удалён`);
+// manual share: commit on Enter / blur
+$("#streams").addEventListener("change", (e) => {
+  if (!e.target.classList.contains("share-input")) return;
+  const sid = +e.target.closest("[data-stream]").dataset.stream;
+  const oid = +e.target.closest("[data-offer]").dataset.offer;
+  const share = parseInt(e.target.value, 10);
+  if (Number.isNaN(share) || share < 0 || share > 100) {
+    toast("Доля — целое число от 0 до 100", true);
+    return renderStreams();
+  }
+  streamAction(sid, "PATCH", `/api/streams/${sid}/offers/${oid}`, { share });
 });
 
-const ACTION_LABEL = { add: "добавлен", remove: "удалён", shares: "доли" };
+// offer search with suggestions (debounced, goes to our API -> Keitaro)
+let searchTimer;
+$("#streams").addEventListener("input", (e) => {
+  if (!e.target.classList.contains("offer-search")) return;
+  const input = e.target;
+  const box = input.nextElementSibling;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    const q = input.value.trim();
+    if (!q) return box.classList.add("hidden");
+    const card = input.closest("[data-stream]");
+    const stream = STATE.streams.find((s) => s.id === +card.dataset.stream);
+    const active = new Set(stream.offers.filter((o) => o.state === "active").map((o) => o.offer_id));
+    try {
+      const found = await api("GET", `/api/offers/search?q=${encodeURIComponent(q)}`);
+      box.innerHTML = found.length
+        ? found.map((o) => active.has(o.id)
+            ? `<div class="sg disabled">#${o.id} ${esc(o.name)} <span class="muted">— уже в потоке</span></div>`
+            : `<div class="sg" data-add="${o.id}">#${o.id} ${esc(o.name)}</div>`).join("")
+        : `<div class="sg disabled">Ничего не найдено</div>`;
+      box.classList.remove("hidden");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }, 250);
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".add-offer")) $$(".suggest").forEach((b) => b.classList.add("hidden"));
+});
+
 async function loadHistory() {
   const list = await api("GET", `/api/campaigns/${STATE.campaign.id}/history`).catch(() => []);
   $("#history-card").classList.toggle("hidden", !list.length);
   const fmtShares = (o) => Object.entries(o).map(([k, v]) => `#${k}: ${v}%`).join(", ") || "—";
   $("#history").innerHTML = list.map((h) => `<div class="hist">
-      <span class="tag ${h.action}">${ACTION_LABEL[h.action] || h.action}</span>
-      ${h.action !== "shares" ? h.offer_ids.map((i) => "#" + i).join(", ") : ""}
-      <span class="muted">поток #${h.stream_id} · ${new Date(h.created_at + "Z").toLocaleString("ru-RU")}</span><br>
+      <span class="tag shares">push</span> поток #${h.stream_id}
+      <span class="muted">· ${new Date(h.created_at + "Z").toLocaleString("ru-RU")}</span><br>
       <span class="muted">было:</span> ${esc(fmtShares(h.before))} → <span class="muted">стало:</span> ${esc(fmtShares(h.after))}
     </div>`).join("");
 }
