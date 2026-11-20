@@ -19,6 +19,8 @@ class Settings(BaseSettings):
 
     geo_redirect_url: str = "https://www.google.com"
 
+    demo_mode: bool = False  # set by app/demo.py only
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -54,6 +54,7 @@ function fillSelect(sel, items, selected, label = (i) => `${i.name} (#${i.id})`)
 
 async function loadMeta() {
   META = await api("GET", "/api/meta");
+  $("#demo-banner").classList.toggle("hidden", !META.demo);
   const f = $("#create-form");
   fillSelect(f.offer_id, META.offers, null, (o) => `#${o.id} ${o.name}`);
   fillSelect(f.domain_id, META.domains, META.defaults.domain_id);

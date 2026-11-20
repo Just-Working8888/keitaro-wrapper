@@ -95,3 +95,4 @@ tr.row-dirty td:first-child { box-shadow: inset 3px 0 0 #f1c232; }
 .sg:hover { background: #f2f6ff; }
 .sg.disabled { cursor: default; color: var(--muted); background: none; }
 .legend { margin: 4px 2px 16px; }
+.demo-banner { margin-left: auto; background: #f1c232; color: #1d2330; font-weight: 700; font-size: 12px; padding: 5px 12px; border-radius: 6px; letter-spacing: .02em; }

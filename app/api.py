@@ -46,6 +46,7 @@ def meta(client: KeitaroClient = Depends(get_client), settings: Settings = Depen
         },
         "geo_redirect_url": settings.geo_redirect_url,
         "intervals": editor.INTERVALS,
+        "demo": settings.demo_mode,
     }
 
 
